@@ -1,0 +1,130 @@
+═══════════════════════════════════════════════════════
+          HƯỚNG DẪN CÀI ĐẶT VÀ SỬ DỤNG OCR-QR
+═══════════════════════════════════════════════════════
+
+📱 YÊU CẦU HỆ THỐNG
+───────────────────
+• Android 7.0 (API 24) trở lên
+• Khoảng trống: 100 MB
+• Quyền: Đọc/ghi file
+
+═══════════════════════════════════════════════════════
+
+📦 CÀI ĐẶT
+──────────
+1. Tải file: OCR-QR_v1.0.0.apk
+2. Mở file trên điện thoại
+3. Nếu có cảnh báo "Cài đặt từ nguồn không xác định":
+   → Vào Settings → Cho phép cài đặt từ nguồn này
+4. Bấm "Cài đặt"
+5. Mở app, cho phép quyền đọc/ghi file
+
+═══════════════════════════════════════════════════════
+
+🎯 CÁCH SỬ DỤNG
+───────────────
+
+BƯỚC 1: Chọn File PDF
+• Bấm "Chọn file PDF"
+• Chọn file chứng nhận (PDF nhiều trang)
+
+BƯỚC 2: Thêm Thông Tin Chung (Không cần quét)
+• Bấm nút (+) "Thêm thông tin chung"
+• Nhập thông tin dùng chung cho tất cả trang:
+  - Công ty: LICO
+  - Trung tâm: LICOBIM
+  - Chứng nhận: BIM Revit Architecture
+• Có thể thêm nhiều trường tùy ý
+
+BƯỚC 3: Vẽ Khung Quét OCR (Thông tin riêng từng trang)
+• Vẽ khung quanh các trường cần quét:
+  - Họ và tên
+  - Mã số văn bằng
+• Đặt tên cho từng trường
+
+BƯỚC 4: Quét Chữ
+• Bấm "Quét chữ"
+• Đợi OCR hoàn thành
+• Xem kết quả, sửa nếu cần
+
+BƯỚC 5: Đặt Mã QR
+• Bấm "Đặt mã QR"
+• Kéo thả mã QR vào vị trí mong muốn trên trang
+• Bấm ✓ "Xác nhận"
+
+BƯỚC 6: Xử Lý Hàng Loạt
+• App tự động quét tất cả trang
+• Thông tin tĩnh (Công ty, Trung tâm...) tự động áp dụng cho mọi trang
+• Chỉ quét thông tin động (Họ tên, Mã số)
+
+BƯỚC 7: Xuất PDF
+• Xem lại kết quả
+• Bấm "Xuất PDF"
+• Chọn thư mục lưu (khuyến nghị: Download)
+• Đặt tên file
+• Đợi xuất xong (~2-3 giây/trang)
+
+BƯỚC 8: Mở File
+• Bấm "Mở file" để xem PDF
+• Hoặc bấm "Màn hình chính" để xử lý file khác
+
+═══════════════════════════════════════════════════════
+
+💡 MẸO SỬ DỤNG
+───────────────
+✓ Thông tin tĩnh (Công ty, Trung tâm, Chứng nhận):
+  → Dùng nút (+) thay vì vẽ khung
+  → Nhập 1 lần, áp dụng cho tất cả trang
+
+✓ Thông tin động (Họ tên, Mã số):
+  → Vẽ khung quét trên trang đầu
+  → App tự động quét các trang sau
+
+✓ QR code:
+  → Chứa TẤT CẢ thông tin (tĩnh + động)
+  → Vị trí đặt 1 lần, áp dụng cho tất cả trang
+
+═══════════════════════════════════════════════════════
+
+🔒 BẢO MẬT
+───────────
+• App KHÔNG kết nối internet
+• Tất cả xử lý trên máy (on-device OCR)
+• Không thu thập dữ liệu
+• Không gửi file đi đâu
+• An toàn tuyệt đối với dữ liệu nhạy cảm
+
+═══════════════════════════════════════════════════════
+
+📊 THÔNG TIN KỸ THUẬT
+─────────────────────
+Tên app:     OCR-QR
+Phiên bản:   1.0.0
+Kích thước:  30.9 MB
+Platform:    Flutter + ML Kit
+OCR Engine:  Google ML Kit (on-device)
+Build:       arm64-v8a (64-bit Android)
+
+═══════════════════════════════════════════════════════
+
+❓ GẶP VẤN ĐỀ
+─────────────
+• OCR sai: Chỉnh lại khung quét cho rõ hơn
+• QR không hiển thị: Rebuild app (uninstall + install lại)
+• Xuất PDF chậm: Bình thường với file nhiều trang (13 trang ~30 giây)
+• App crash: Clear app data trong Settings
+
+═══════════════════════════════════════════════════════
+
+🎓 ỨNG DỤNG
+───────────
+• Quét chứng nhận đào tạo hàng loạt
+• Thêm QR code tự động vào PDF
+• Quản lý thông tin học viên
+• Export PDF có mã QR
+
+═══════════════════════════════════════════════════════
+
+Phát triển bởi: [Tên của bạn]
+Ngày: 03/10/2026
+GitHub: https://github.com/Catoxg9705/OCR-into-QR

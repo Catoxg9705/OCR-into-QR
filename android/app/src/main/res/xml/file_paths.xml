@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Public external storage (includes /storage/emulated/0/) -->
+    <external-path name="external_storage_root" path="." />
+    <!-- App-specific external files directory -->
+    <external-files-path name="external_files" path="." />
+    <!-- App-specific cache directory -->
+    <cache-path name="cache" path="." />
+    <!-- App-specific external cache directory -->
+    <external-cache-path name="external_cache" path="." />
+</paths>
