@@ -321,8 +321,23 @@ class DocumentState extends ChangeNotifier {
     _errorMessage = null;
     _notify();
     try {
-      // Skip OCR for static fields; only scan non-static fields
-      final nonStaticZones = snapshot.where((z) => !z.isStatic).toList();
+      // Skip OCR for static fields; only scan non-static fields with valid rects
+      final nonStaticZones = snapshot
+          .where((z) => 
+              !z.isStatic && 
+              z.rect != Rect.zero && 
+              z.rect.width > 0 && 
+              z.rect.height > 0)
+          .toList();
+      
+      // If all fields are static, skip OCR entirely
+      if (nonStaticZones.isEmpty) {
+        DebugLogService.instance.logInfo('All fields are static - skipping OCR');
+        _isProcessingOcr = false;
+        _notify();
+        return;
+      }
+      
       final editedTexts = nonStaticZones.map((z) => z.extractedText).toList();
 
       final results = await _ocr.scanZones(

@@ -30,6 +30,21 @@ class OcrService {
     List<String?>? editedTexts,
   }) async {
     if (regions.isEmpty) return [];
+    
+    // Validate all regions are valid before processing
+    for (var i = 0; i < regions.length; i++) {
+      final rect = regions[i];
+      if (rect == ui.Rect.zero || 
+          rect.width <= 0 || 
+          rect.height <= 0 ||
+          !rect.isFinite) {
+        DebugLogService.instance.logError(
+          'Invalid region at index $i: $rect - skipping OCR',
+        );
+        return [];
+      }
+    }
+    
     final temporaryDirectory = await getTemporaryDirectory();
     final crops = await compute(_prepareCrops, <String, Object>{
       'imagePath': imagePath,
@@ -368,12 +383,35 @@ class OcrService {
 Future<List<Map<String, Object>>> _prepareCrops(
   Map<String, Object> args,
 ) async {
+  final regions = args['regions'] as List<List<double>>;
+  
+  // Validate regions before decoding image
+  for (var i = 0; i < regions.length; i++) {
+    final rect = regions[i];
+    if (rect.length != 4) {
+      throw FormatException('Invalid region at index $i: expected 4 values');
+    }
+    final left = rect[0];
+    final top = rect[1];
+    final right = rect[2];
+    final bottom = rect[3];
+    
+    if (right <= left || bottom <= top) {
+      throw FormatException(
+        'Invalid region at index $i: width=${right - left}, height=${bottom - top}',
+      );
+    }
+    
+    if (!left.isFinite || !top.isFinite || !right.isFinite || !bottom.isFinite) {
+      throw FormatException('Invalid region at index $i: non-finite values');
+    }
+  }
+  
   final page = img.decodeImage(
     await File(args['imagePath'] as String).readAsBytes(),
   );
   if (page == null) throw const FormatException('Cannot decode page image');
   final oriented = img.bakeOrientation(page);
-  final regions = args['regions'] as List<List<double>>;
   final files = <Map<String, Object>>[];
   try {
     for (var index = 0; index < regions.length; index++) {
@@ -400,7 +438,20 @@ Future<List<Map<String, Object>>> _prepareCrops(
         width: right - left,
         height: bottom - top,
       );
-      await File(path).writeAsBytes(img.encodePng(crop), flush: true);
+      
+      // Validate crop result before encoding
+      if (crop.width <= 0 || crop.height <= 0) {
+        throw FormatException(
+          'Crop failed at index $index: resulted in invalid dimensions',
+        );
+      }
+      
+      final encoded = img.encodePng(crop);
+      if (encoded.isEmpty) {
+        throw FormatException('PNG encoding failed at index $index');
+      }
+      
+      await File(path).writeAsBytes(encoded, flush: true);
     }
     return files;
   } catch (_) {
