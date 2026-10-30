@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:flutter_tesseract_ocr/flutter_tesseract_ocr.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
@@ -11,36 +11,34 @@ import '../models/ocr_result.dart' as app;
 import '../models/template_zone.dart';
 import 'debug_log_service.dart';
 
-/// ML Kit stays on the root isolate; only pure Dart image work uses compute.
+/// Tesseract OCR (Vietnamese) runs on the root isolate; only pure Dart image
+/// work (crop) uses compute.
 class OcrService {
-  TextRecognizer? _recognizer;
   static const _uuid = Uuid();
 
   /// Decode a page once off the UI isolate, then recognize its crops in order.
   /// All result bounds are translated back into original page coordinates.
   /// Text is trimmed and leading punctuation (: - whitespace) is removed.
-  /// Bounding boxes snap to the first valid alphanumeric character.
-  /// 
+  ///
   /// If [editedTexts] is provided and non-null for a zone, the method will
-  /// attempt to find that edited text within the OCR elements and shrink
-  /// the bounding box to match the edited text exactly.
+  /// attempt to locate that edited text within the recognized string and
+  /// shrink the bounding box to match it proportionally.
   Future<List<app.ZoneOcrResult>> recognizeZones(
     String imagePath,
     List<ui.Rect> regions, {
     List<String?>? editedTexts,
   }) async {
     if (regions.isEmpty) return [];
-    
-    // Validate and auto-expand regions to meet ML Kit minimum size (32x32px)
+
+    // Validate and auto-expand regions to meet the OCR minimum (32x32px).
     const minSize = 32.0;
     final validatedRegions = <ui.Rect>[];
-    
+
     for (var i = 0; i < regions.length; i++) {
       var rect = regions[i];
-      
-      // Check basic validity
-      if (rect == ui.Rect.zero || 
-          rect.width <= 0 || 
+
+      if (rect == ui.Rect.zero ||
+          rect.width <= 0 ||
           rect.height <= 0 ||
           !rect.isFinite) {
         DebugLogService.instance.logError(
@@ -48,25 +46,22 @@ class OcrService {
         );
         return [];
       }
-      
-      // Auto-expand if too small (center-expand to preserve text position)
+
       if (rect.width < minSize || rect.height < minSize) {
         final center = rect.center;
-        final newWidth = rect.width < minSize ? minSize : rect.width;
-        final newHeight = rect.height < minSize ? minSize : rect.height;
         rect = ui.Rect.fromCenter(
           center: center,
-          width: newWidth,
-          height: newHeight,
+          width: rect.width < minSize ? minSize : rect.width,
+          height: rect.height < minSize ? minSize : rect.height,
         );
         DebugLogService.instance.logInfo(
-          'Auto-expanded zone $i from ${regions[i].width.toInt()}x${regions[i].height.toInt()} to ${rect.width.toInt()}x${rect.height.toInt()}px (ML Kit minimum)',
+          'Auto-expanded zone $i from ${regions[i].width.toInt()}x${regions[i].height.toInt()} to ${rect.width.toInt()}x${rect.height.toInt()}px (OCR minimum)',
         );
       }
-      
+
       validatedRegions.add(rect);
     }
-    
+
     final temporaryDirectory = await getTemporaryDirectory();
     final crops = await compute(_prepareCrops, <String, Object>{
       'imagePath': imagePath,
@@ -78,107 +73,76 @@ class OcrService {
       ],
     });
     try {
-      final recognizer = _recognizer ??= TextRecognizer(
-        script: TextRecognitionScript.latin,
-      );
       final results = <app.ZoneOcrResult>[];
       for (var i = 0; i < crops.length; i++) {
         final crop = crops[i];
-        // Native wrappers never cross the isolate boundary.
-        final text = await recognizer.processImage(
-          InputImage.fromFilePath(crop['path'] as String),
-        );
-        
-        // Check if user edited this zone's text
-        final editedText = (editedTexts != null && i < editedTexts.length) 
-            ? editedTexts[i] 
+        final cropPath = crop['path'] as String;
+
+        final editedText = (editedTexts != null && i < editedTexts.length)
+            ? editedTexts[i]
             : null;
-        
-        String cleanedText;
-        ui.Rect? detected;
-        double leftAdjustment = 0.0;
-        
-        if (editedText != null && editedText.isNotEmpty) {
-          // User has edited text - find it within ML Kit elements and shrink box
-          cleanedText = editedText.trim();
-          detected = _findEditedTextBounds(text, cleanedText);
-        } else {
-          // Original auto-trim logic: strip leading punctuation/whitespace
-          cleanedText = text.text.trim();
-          final leadingPunctMatch = RegExp(r'^[\s:;\-–—]+').firstMatch(cleanedText);
-          final trimmedChars = leadingPunctMatch?.group(0)?.length ?? 0;
-          if (trimmedChars > 0) {
-            cleanedText = cleanedText.substring(trimmedChars).trim();
-          }
-          
-          // Find the first valid text element and adjust bounding box
-          outerLoop:
-          for (final block in text.blocks) {
-            for (final line in block.lines) {
-              if (line.text.trim().isEmpty) continue;
-              
-              // Check if this line contains the cleaned text start
-              if (trimmedChars > 0 && cleanedText.isNotEmpty) {
-                // Find first element that contains alphanumeric after punctuation
-                for (final element in line.elements) {
-                  final elemText = element.text.trim();
-                  if (elemText.isEmpty) continue;
-                  
-                  // Skip elements that are pure punctuation
-                  if (RegExp(r'^[\s:;\-–—]+$').hasMatch(elemText)) {
-                    continue;
-                  }
-                  
-                  // This is the first valid element - snap to its left edge
-                  if (detected == null) {
-                    leftAdjustment = element.boundingBox.left;
-                  }
-                  detected = detected == null
-                      ? element.boundingBox
-                      : detected.expandToInclude(element.boundingBox);
-                }
-              } else {
-                // No trimming needed, use original logic
-                detected = detected == null
-                    ? line.boundingBox
-                    : detected.expandToInclude(line.boundingBox);
-              }
-              
-              if (detected != null) break outerLoop;
-            }
-          }
-        }
-        
-        final origin = ui.Offset(
+        final cropBounds = ui.Rect.fromLTWH(
           (crop['left'] as num).toDouble(),
           (crop['top'] as num).toDouble(),
-        );
-        final cropBounds = ui.Rect.fromLTWH(
-          origin.dx,
-          origin.dy,
           (crop['width'] as num).toDouble(),
           (crop['height'] as num).toDouble(),
         );
-        
-        // Translate detected bounds back to page coordinates
-        var bounds = detected?.shift(origin).intersect(cropBounds);
-        
-        // Apply left adjustment only for auto-trimmed punctuation (not edited text)
-        if (bounds != null && !bounds.isEmpty && leftAdjustment > 0 && editedText == null) {
-          bounds = ui.Rect.fromLTRB(
-            origin.dx + leftAdjustment,
-            bounds.top,
-            bounds.right,
-            bounds.bottom,
+
+        // One HOCR pass yields words with both text and bounding boxes.
+        List<Map<String, Object>> words = const [];
+        try {
+          final hocr = await FlutterTesseractOcr.extractHocr(
+            cropPath,
+            language: 'vie',
+            args: {'preserve_interword_spaces': '1'},
           );
+          words = _parseHocrWords(hocr);
+        } catch (_) {
+          words = const [];
         }
-        
-        results.add(
-          app.ZoneOcrResult(
-            text: cleanedText,
-            bounds: bounds == null || bounds.isEmpty ? null : bounds,
-          ),
-        );
+
+        String cleanedText;
+        ui.Rect? bounds;
+        if (editedText != null && editedText.isNotEmpty) {
+          cleanedText = editedText.trim();
+          final cropRect = _findEditedTextBoundsInWords(words, cleanedText);
+          if (cropRect != null && !cropRect.isEmpty) {
+            bounds = cropRect.shift(cropBounds.topLeft);
+          } else {
+            final fullText = await FlutterTesseractOcr.extractText(
+              cropPath,
+              language: 'vie',
+              args: {'preserve_interword_spaces': '1'},
+            );
+            bounds = _findEditedTextBoundsInText(
+              fullText,
+              cleanedText,
+              cropBounds,
+            );
+          }
+          DebugLogService.instance.logInfo(
+            'OCR zone $i edited="$cleanedText" '
+            'crop=${cropBounds.width.toInt()}x${cropBounds.height.toInt()} '
+            'bounds=${bounds!.width.toInt()}x${bounds.height.toInt()}',
+          );
+        } else {
+          if (words.isNotEmpty) {
+            final fullText = words.map((w) => w['text'] as String).join(' ');
+            cleanedText = _cleanText(fullText);
+            final tight = _unionOfWordBounds(words);
+            bounds = tight != null ? tight.shift(cropBounds.topLeft) : cropBounds;
+          } else {
+            final fullText = await FlutterTesseractOcr.extractText(
+              cropPath,
+              language: 'vie',
+              args: {'preserve_interword_spaces': '1'},
+            );
+            cleanedText = _cleanText(fullText);
+            bounds = cropBounds;
+          }
+        }
+
+        results.add(app.ZoneOcrResult(text: cleanedText, bounds: bounds));
       }
       return results;
     } finally {
@@ -197,142 +161,132 @@ class OcrService {
     }
   }
 
-  /// Find exact bounding box for edited text within ML Kit elements.
-  /// Returns null if text cannot be matched.
-  ui.Rect? _findEditedTextBounds(RecognizedText recognizedText, String targetText) {
-    if (targetText.isEmpty) return null;
-    
-    // Normalize target for matching
-    final normalizedTarget = targetText.toLowerCase().replaceAll(RegExp(r'\s+'), '');
-    
+  /// Locate the edited text inside the recognized full text and map its
+  /// character range proportionally onto [cropBounds] (single-line, LTR).
+  ui.Rect _findEditedTextBoundsInText(
+    String fullText,
+    String targetText,
+    ui.Rect cropBounds,
+  ) {
+    final normTarget = _normalizeLoose(targetText);
+    final normFull = _normalizeLoose(fullText);
+    if (normTarget.isEmpty || normFull.isEmpty) return cropBounds;
+    final idx = normFull.indexOf(normTarget);
+    if (idx >= 0) {
+      final start = idx / normFull.length;
+      final end = (idx + normTarget.length) / normFull.length;
+      return ui.Rect.fromLTRB(
+        cropBounds.left + cropBounds.width * start,
+        cropBounds.top,
+        cropBounds.left + cropBounds.width * end,
+        cropBounds.bottom,
+      );
+    }
+    return cropBounds;
+  }
+
+  ui.Rect? _unionOfWordBounds(List<Map<String, Object>> words) {
     ui.Rect? bounds;
-    
-    // Try to find exact match by iterating through elements
-    for (final block in recognizedText.blocks) {
-      for (final line in block.lines) {
-        // Build accumulated text from elements
-        final elements = line.elements;
-        for (var i = 0; i < elements.length; i++) {
-          var accumulated = '';
-          ui.Rect? tempBounds;
-          
-          // Try starting from this element
-          for (var j = i; j < elements.length; j++) {
-            accumulated += elements[j].text;
-            final normalizedAccum = accumulated.toLowerCase().replaceAll(RegExp(r'\s+'), '');
-            
-            // Update bounds
-            tempBounds = tempBounds == null 
-                ? elements[j].boundingBox 
-                : tempBounds.expandToInclude(elements[j].boundingBox);
-            
-            // Check if we have a match
-            if (normalizedAccum == normalizedTarget) {
-              return tempBounds;
-            }
-            
-            // If we've gone too far, break
-            if (normalizedAccum.length > normalizedTarget.length) {
-              break;
-            }
-          }
-        }
-        
-        // Also try full line match
-        final lineNormalized = line.text.toLowerCase().replaceAll(RegExp(r'\s+'), '');
-        if (lineNormalized == normalizedTarget) {
-          return line.boundingBox;
-        }
-      }
+    for (final w in words) {
+      final b = w['bbox'] as ui.Rect;
+      bounds = bounds == null ? b : bounds.expandToInclude(b);
     }
-    
-    // Fallback: if no exact match, return the bounds of all text
-    // (this preserves original behavior when edited text doesn't match)
-    for (final block in recognizedText.blocks) {
-      for (final line in block.lines) {
-        bounds = bounds == null 
-            ? line.boundingBox 
-            : bounds.expandToInclude(line.boundingBox);
-      }
-    }
-    
     return bounds;
   }
 
-  /// Smart baseline expansion: find TextLine containing the template zone's start,
-  /// then extract ALL elements on that baseline (same Y-axis) to capture full names.
-  /// This handles variable-length text (e.g., "Trần Hùng" vs "Nguyễn Thị Bích Ngân").
-  Future<List<String>> extractWithBaselineExpansion(
-    String imagePath,
-    List<TemplateZone> templateZones,
-    ui.Size imageSize,
-  ) async {
-    if (templateZones.isEmpty) return [];
-    
-    final recognizer = _recognizer ??= TextRecognizer(
-      script: TextRecognitionScript.latin,
-    );
-    
-    final text = await recognizer.processImage(
-      InputImage.fromFilePath(imagePath),
-    );
-    
-    final results = <String>[];
-    
-    for (final zone in templateZones) {
-      // Convert zone's sampling rect (or rect) to absolute coordinates
-      final searchRect = zone.samplingRect ?? zone.rect;
-      
-      String? extractedValue;
-      
-      // Find TextLine whose start point falls within the search rect
-      for (final block in text.blocks) {
-        for (final line in block.lines) {
-          // Check if line's left edge is within the zone horizontally
-          // and line's Y position overlaps the zone vertically
-          if (line.boundingBox.left >= searchRect.left &&
-              line.boundingBox.left <= searchRect.right &&
-              line.boundingBox.top <= searchRect.bottom &&
-              line.boundingBox.bottom >= searchRect.top) {
-            
-            // Found the matching line - extract all elements on this baseline
-            final baseline = line.boundingBox.top + (line.boundingBox.height / 2);
-            final tolerance = line.boundingBox.height * 0.3; // 30% tolerance
-            
-            // Collect all elements on the same horizontal baseline
-            final baselineElements = <TextElement>[];
-            for (final elem in line.elements) {
-              final elemBaseline = elem.boundingBox.top + (elem.boundingBox.height / 2);
-              if ((elemBaseline - baseline).abs() <= tolerance) {
-                baselineElements.add(elem);
-              }
-            }
-            
-            // Join all elements into final text
-            if (baselineElements.isNotEmpty) {
-              extractedValue = baselineElements
-                  .map((e) => e.text)
-                  .join(' ')
-                  .trim();
-              
-              // Clean up leading punctuation
-              final leadingPunctMatch = RegExp(r'^[\s:;\-–—]+').firstMatch(extractedValue);
-              final trimmedChars = leadingPunctMatch?.group(0)?.length ?? 0;
-              if (trimmedChars > 0) {
-                extractedValue = extractedValue.substring(trimmedChars).trim();
-              }
-            }
-            break;
-          }
-        }
-        if (extractedValue != null) break;
+  ui.Rect? _findEditedTextBoundsInWords(
+    List<Map<String, Object>> words,
+    String targetText,
+  ) {
+    final normTarget = _normalizeLoose(targetText);
+    if (normTarget.isEmpty) return null;
+
+    final normWords = words
+        .map((w) => _normalizeLoose(w['text'] as String))
+        .toList();
+    final full = normWords.join('');
+    final idx = full.indexOf(normTarget);
+    if (idx < 0) return null;
+    final endIdx = idx + normTarget.length;
+
+    ui.Rect? bounds;
+    var cursor = 0;
+    for (var i = 0; i < normWords.length; i++) {
+      final start = cursor;
+      final end = cursor + normWords[i].length;
+      cursor = end;
+      if (end > idx && start < endIdx) {
+        final b = words[i]['bbox'] as ui.Rect;
+        bounds = bounds == null ? b : bounds.expandToInclude(b);
       }
-      
-      results.add(extractedValue ?? '');
     }
-    
-    return results;
+    return bounds;
   }
+
+  List<Map<String, Object>> _parseHocrWords(String hocr) {
+    final words = <Map<String, Object>>[];
+    final regex = RegExp(
+      r"class='ocrx_word'[^>]*title='[^']*bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)[^']*'[^>]*>(.*?)</span>",
+      dotAll: true,
+    );
+    for (final m in regex.allMatches(hocr)) {
+      final x1 = double.parse(m.group(1)!);
+      final y1 = double.parse(m.group(2)!);
+      final x2 = double.parse(m.group(3)!);
+      final y2 = double.parse(m.group(4)!);
+      final text = _decodeHocrText(m.group(5)!);
+      if (text.isEmpty) continue;
+      words.add({
+        'text': text,
+        'bbox': ui.Rect.fromLTRB(x1, y1, x2, y2),
+      });
+    }
+    return words;
+  }
+
+  String _decodeHocrText(String raw) {
+    return raw
+        .replaceAll('&amp;', '&')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#39;', "'")
+        .replaceAll(RegExp(r'<[^>]+>'), '')
+        .trim();
+  }
+
+  String _cleanText(String raw) {
+    var text = raw.trim();
+    final leadingPunct = RegExp(r'^[\s:;\-–—]+').firstMatch(text);
+    if (leadingPunct != null) {
+      text = text.substring(leadingPunct.group(0)!.length).trim();
+    }
+    return text;
+  }
+
+  static String _normalizeLoose(String s) {
+    final buffer = StringBuffer();
+    for (final ch in s.toLowerCase().split('')) {
+      buffer.write(_diacriticMap[ch] ?? ch);
+    }
+    return buffer.toString().replaceAll(RegExp(r'[^a-z0-9]'), '');
+  }
+
+  static const Map<String, String> _diacriticMap = {
+    'á': 'a', 'à': 'a', 'ả': 'a', 'ã': 'a', 'ạ': 'a',
+    'ă': 'a', 'ắ': 'a', 'ằ': 'a', 'ẳ': 'a', 'ẵ': 'a', 'ặ': 'a',
+    'â': 'a', 'ấ': 'a', 'ầ': 'a', 'ẩ': 'a', 'ẫ': 'a', 'ậ': 'a',
+    'đ': 'd',
+    'é': 'e', 'è': 'e', 'ẻ': 'e', 'ẽ': 'e', 'ẹ': 'e',
+    'ê': 'e', 'ế': 'e', 'ề': 'e', 'ể': 'e', 'ễ': 'e', 'ệ': 'e',
+    'í': 'i', 'ì': 'i', 'ỉ': 'i', 'ĩ': 'i', 'ị': 'i',
+    'ó': 'o', 'ò': 'o', 'ỏ': 'o', 'õ': 'o', 'ọ': 'o',
+    'ô': 'o', 'ố': 'o', 'ồ': 'o', 'ổ': 'o', 'ỗ': 'o', 'ộ': 'o',
+    'ơ': 'o', 'ớ': 'o', 'ờ': 'o', 'ở': 'o', 'ỡ': 'o', 'ợ': 'o',
+    'ú': 'u', 'ù': 'u', 'ủ': 'u', 'ũ': 'u', 'ụ': 'u',
+    'ư': 'u', 'ứ': 'u', 'ừ': 'u', 'ử': 'u', 'ữ': 'u', 'ự': 'u',
+    'ý': 'y', 'ỳ': 'y', 'ỷ': 'y', 'ỹ': 'y', 'ỵ': 'y',
+  };
 
   /// Header-only size lookup: no full-size texture is decoded just for metadata.
   Future<ui.Size> getImageSize(String path) async {
@@ -395,9 +349,7 @@ class OcrService {
   }
 
   Future<void> dispose() async {
-    final recognizer = _recognizer;
-    _recognizer = null;
-    if (recognizer != null) await recognizer.close();
+    // Tesseract has no persistent recognizer to close.
   }
 }
 
@@ -406,7 +358,7 @@ Future<List<Map<String, Object>>> _prepareCrops(
   Map<String, Object> args,
 ) async {
   final regions = args['regions'] as List<List<double>>;
-  
+
   // Validate regions before decoding image
   for (var i = 0; i < regions.length; i++) {
     final rect = regions[i];
@@ -417,18 +369,18 @@ Future<List<Map<String, Object>>> _prepareCrops(
     final top = rect[1];
     final right = rect[2];
     final bottom = rect[3];
-    
+
     if (right <= left || bottom <= top) {
       throw FormatException(
         'Invalid region at index $i: width=${right - left}, height=${bottom - top}',
       );
     }
-    
+
     if (!left.isFinite || !top.isFinite || !right.isFinite || !bottom.isFinite) {
       throw FormatException('Invalid region at index $i: non-finite values');
     }
   }
-  
+
   final page = img.decodeImage(
     await File(args['imagePath'] as String).readAsBytes(),
   );
@@ -460,19 +412,18 @@ Future<List<Map<String, Object>>> _prepareCrops(
         width: right - left,
         height: bottom - top,
       );
-      
-      // Validate crop result before encoding
+
       if (crop.width <= 0 || crop.height <= 0) {
         throw FormatException(
           'Crop failed at index $index: resulted in invalid dimensions',
         );
       }
-      
+
       final encoded = img.encodePng(crop);
       if (encoded.isEmpty) {
         throw FormatException('PNG encoding failed at index $index');
       }
-      
+
       await File(path).writeAsBytes(encoded, flush: true);
     }
     return files;

@@ -36,7 +36,6 @@ dependencies:
   cupertino_icons: ^1.0.8
   file_picker: ^13.1.0
   pdfx: ^2.11.0
-  google_mlkit_text_recognition: ^0.13.0
   path_provider: ^2.1.6
   uuid: ^4.5.1
   provider: ^6.1.2
@@ -47,6 +46,8 @@ dependencies:
   shared_preferences: ^2.5.5
   open_file: ^4.0.0
   permission_handler: ^11.3.1
+  flutter_tesseract_ocr:
+    path: third_party/flutter_tesseract_ocr
 
 dev_dependencies:
   flutter_test:
@@ -64,6 +65,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/tessdata/
+    - assets/tessdata_config.json
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -620,7 +620,6 @@ class DocumentState extends ChangeNotifier {
 
     final generation = _generation;
     _isReshrinking = true;
-    const minSize = 32.0;
     try {
       final results = await _ocr.scanZones(
         page,
@@ -639,15 +638,9 @@ class DocumentState extends ChangeNotifier {
           'new=${bounds == null ? 'null' : '${bounds.width.toInt()}x${bounds.height.toInt()}'}',
         );
         if (bounds == null || bounds.isEmpty) continue;
-        var b = bounds;
-        if (b.width < minSize || b.height < minSize) {
-          b = Rect.fromCenter(
-            center: b.center,
-            width: math.max(b.width, minSize),
-            height: math.max(b.height, minSize),
-          );
-        }
-        shrunk[toShrink[i].id] = b;
+        // Use the detected text bounds directly (no min-size padding) so the
+        // visual frame visibly tightens around the corrected value.
+        shrunk[toShrink[i].id] = bounds;
       }
       if (shrunk.isEmpty) return;
 
