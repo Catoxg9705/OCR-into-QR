@@ -146,8 +146,12 @@ class DocumentState extends ChangeNotifier {
       return;
     }
     // Build payload with ALL fields (static + OCR), respecting user's ordering
+    // If extractedText is empty, show only label; otherwise "Label: Value"
     final payload = _zones
-        .map((zone) => '${zone.label}: ${zone.extractedText}')
+        .map((zone) {
+          final value = zone.extractedText.trim();
+          return value.isEmpty ? zone.label : '${zone.label}: $value';
+        })
         .join('\n');
     _qrPayload = payload.trim().isEmpty ? 'EMPTY' : payload;
     _batchResult = null;
@@ -358,10 +362,25 @@ class DocumentState extends ChangeNotifier {
             // Skip empty results - do not add to newZones, auto-delete failed fields
             emptyCount++;
           } else {
+            // Update samplingRect to the new shrunk bounds so batch apply uses correct rect
+            var newBounds = results[resultIndex].bounds!;
+            
+            // ML Kit requires minimum 32x32 pixels - expand if too small
+            const minSize = 32.0;
+            if (newBounds.width < minSize || newBounds.height < minSize) {
+              final expandWidth = (minSize - newBounds.width).clamp(0.0, double.infinity);
+              final expandHeight = (minSize - newBounds.height).clamp(0.0, double.infinity);
+              newBounds = newBounds.inflate(expandWidth / 2).inflate(expandHeight / 2);
+              
+              // Ensure it stays within the original user-drawn zone
+              final originalZone = snapshot[i].samplingRect ?? snapshot[i].rect;
+              newBounds = newBounds.intersect(originalZone);
+            }
+            
             newZones.add(snapshot[i].copyWith(
               extractedText: results[resultIndex].text,
-              rect: results[resultIndex].bounds,
-              samplingRect: snapshot[i].samplingRect ?? snapshot[i].rect,
+              rect: newBounds,
+              samplingRect: newBounds, // Use validated bounds
               isManual: false,
             ));
           }
@@ -393,15 +412,7 @@ class DocumentState extends ChangeNotifier {
     if (_disposed || !canBatch) return;
     final doc = _document!;
     final pageOne = _canvas!;
-    final snapshot = List<TemplateZone>.of(_zones);
     final qrPos = _qrPosition;
-
-    // Only non-static zones need relative coordinates for OCR on other pages
-    final nonStaticZones = snapshot.where((z) => !z.isStatic).toList();
-    final relative = [
-      for (final z in nonStaticZones)
-        z.toRelativeRect(pageOne.imageSize, forSampling: true),
-    ];
 
     // QR relative coordinates (optional, only needed for PDF export)
     final double? qrRelX = qrPos != null
@@ -422,6 +433,18 @@ class DocumentState extends ChangeNotifier {
     _isQrPlacementMode = false;
     _notify();
     try {
+      // Re-shrink page-1 sampling rects to match the user's corrected values,
+      // then scan each remaining page within that corrected region only so
+      // stray text (e.g. "TPHCM") the user removed does not reappear.
+      var snapshot = List<TemplateZone>.of(_zones);
+      snapshot = await _shrinkSamplingRects(pageOne, generation, snapshot);
+      if (_disposed || generation != _generation) return;
+
+      final nonStaticZones = snapshot.where((z) => !z.isStatic).toList();
+      final relative = [
+        for (final z in nonStaticZones)
+          z.toRelativeRect(pageOne.imageSize, forSampling: true),
+      ];
       final pages = <PageData>[
         PageData(
           pageNumber: 1,
@@ -436,11 +459,14 @@ class DocumentState extends ChangeNotifier {
         final page = await _ocr.preparePage(doc.filePath, number);
         try {
           if (_disposed) return;
-          // Only scan non-static zones
-          final results = await _ocr.scanZones(page, [
-            for (final r in relative)
-              TemplateZone.fromRelativeRect(r, page.imageSize),
-          ]);
+          // Scan non-static zones within the corrected (shrunk) region only
+          final results = await _ocr.scanZones(
+            page,
+            [
+              for (final r in relative)
+                TemplateZone.fromRelativeRect(r, page.imageSize),
+            ],
+          );
           if (_disposed || generation != _generation) return;
           
           // Build fields: static values from page 1 + OCR results
@@ -492,6 +518,67 @@ class DocumentState extends ChangeNotifier {
       _isProcessingBatch = false;
       _finishOperation();
     }
+  }
+
+  /// Re-scan page 1 with the user's corrected values to shrink each zone's
+  /// [samplingRect] down to the value region (excluding stray trailing text).
+  /// Returns a fresh snapshot; does not mutate [_zones] or notify.
+  Future<List<TemplateZone>> _shrinkSamplingRects(
+    DocumentCanvas page,
+    int generation,
+    List<TemplateZone> snapshot,
+  ) async {
+    final nonStatic = snapshot
+        .where((z) => !z.isStatic && z.rect.width > 0 && z.rect.height > 0)
+        .toList();
+    if (nonStatic.isEmpty) return snapshot;
+
+    // Only shrink zones the user has already given a non-empty value.
+    final toShrink = <TemplateZone>[];
+    final editedTexts = <String?>[];
+    for (final z in nonStatic) {
+      if (z.extractedText.trim().isNotEmpty) {
+        toShrink.add(z);
+        editedTexts.add(z.extractedText);
+      }
+    }
+    if (toShrink.isEmpty) return snapshot;
+
+    final shrunk = <String, Rect>{};
+    const minSize = 32.0;
+    try {
+      final results = await _ocr.scanZones(
+        page,
+        toShrink.map((z) => z.samplingRect ?? z.rect).toList(),
+        editedTexts: editedTexts,
+      );
+      if (_disposed || generation != _generation) return snapshot;
+
+      for (var i = 0; i < toShrink.length && i < results.length; i++) {
+        final bounds = results[i].bounds;
+        if (bounds == null || bounds.isEmpty) continue;
+        var b = bounds;
+        if (b.width < minSize || b.height < minSize) {
+          b = Rect.fromCenter(
+            center: b.center,
+            width: math.max(b.width, minSize),
+            height: math.max(b.height, minSize),
+          );
+        }
+        shrunk[toShrink[i].id] = b;
+      }
+    } catch (error, stack) {
+      DebugLogService.instance.logError('Re-shrink failed', error, stack);
+      return snapshot;
+    }
+
+    return [
+      for (final z in snapshot)
+        if (shrunk.containsKey(z.id))
+          z.copyWith(samplingRect: shrunk[z.id])
+        else
+          z,
+    ];
   }
 
   void updateBatchFieldValue(int pageNumber, int fieldIndex, String newValue) {

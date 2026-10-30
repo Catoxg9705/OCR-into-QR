@@ -164,8 +164,12 @@ class PdfExportService {
 
   Future<Uint8List> _generateQrCodeImage(PageData pageData) async {
     // Build newline-separated key-value plaintext payload
+    // If value is empty, show only label; otherwise "Label: Value"
     final qrPayload = pageData.fields
-        .map((field) => '${field.label}: ${field.value}')
+        .map((field) {
+          final value = field.value.trim();
+          return value.isEmpty ? field.label : '${field.label}: $value';
+        })
         .join('\n');
 
     // Generate QR code as image with transparent background

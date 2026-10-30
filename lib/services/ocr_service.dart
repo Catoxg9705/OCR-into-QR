@@ -31,9 +31,14 @@ class OcrService {
   }) async {
     if (regions.isEmpty) return [];
     
-    // Validate all regions are valid before processing
+    // Validate and auto-expand regions to meet ML Kit minimum size (32x32px)
+    const minSize = 32.0;
+    final validatedRegions = <ui.Rect>[];
+    
     for (var i = 0; i < regions.length; i++) {
-      final rect = regions[i];
+      var rect = regions[i];
+      
+      // Check basic validity
       if (rect == ui.Rect.zero || 
           rect.width <= 0 || 
           rect.height <= 0 ||
@@ -43,6 +48,23 @@ class OcrService {
         );
         return [];
       }
+      
+      // Auto-expand if too small (center-expand to preserve text position)
+      if (rect.width < minSize || rect.height < minSize) {
+        final center = rect.center;
+        final newWidth = rect.width < minSize ? minSize : rect.width;
+        final newHeight = rect.height < minSize ? minSize : rect.height;
+        rect = ui.Rect.fromCenter(
+          center: center,
+          width: newWidth,
+          height: newHeight,
+        );
+        DebugLogService.instance.logInfo(
+          'Auto-expanded zone $i from ${regions[i].width.toInt()}x${regions[i].height.toInt()} to ${rect.width.toInt()}x${rect.height.toInt()}px (ML Kit minimum)',
+        );
+      }
+      
+      validatedRegions.add(rect);
     }
     
     final temporaryDirectory = await getTemporaryDirectory();
@@ -51,7 +73,7 @@ class OcrService {
       'directory': temporaryDirectory.path,
       'token': _uuid.v4(),
       'regions': [
-        for (final rect in regions)
+        for (final rect in validatedRegions)
           [rect.left, rect.top, rect.right, rect.bottom],
       ],
     });
