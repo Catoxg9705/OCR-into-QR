@@ -43,6 +43,9 @@ class DocumentState extends ChangeNotifier {
   double _qrSize = 30.0;
   String _qrPayload = 'EMPTY';
 
+  Timer? _reshrinkTimer;
+  bool _isReshrinking = false;
+
   SelectedDocument? get document => _document;
   DocumentCanvas? get canvas => _canvas;
   List<TemplateZone> get zones => List.unmodifiable(_zones);
@@ -120,6 +123,13 @@ class DocumentState extends ChangeNotifier {
     ];
     _batchResult = null;
     _notify();
+
+    // Debounce: after the user stops typing, shrink the zone frame to the
+    // corrected value so the visual box and batch region stay accurate.
+    _reshrinkTimer?.cancel();
+    _reshrinkTimer = Timer(const Duration(milliseconds: 700), () {
+      unawaited(_reshrinkEditedZones());
+    });
   }
 
   void reorderZones(int oldIndex, int newIndex) {
@@ -581,6 +591,70 @@ class DocumentState extends ChangeNotifier {
     ];
   }
 
+  /// Quietly re-scan page 1 with the user's corrected values and shrink both
+  /// [rect] (visual frame) and [samplingRect] so deleting stray text visibly
+  /// tightens the box. Runs in the background; does not show the busy spinner.
+  Future<void> _reshrinkEditedZones() async {
+    if (_disposed || isBusy || _isReshrinking) return;
+    final page = _canvas;
+    if (page == null) return;
+
+    final snapshot = List<TemplateZone>.of(_zones);
+    final toShrink = snapshot
+        .where((z) =>
+            !z.isStatic &&
+            z.extractedText.trim().isNotEmpty &&
+            z.rect.width > 0 &&
+            z.rect.height > 0)
+        .toList();
+    if (toShrink.isEmpty) return;
+
+    final generation = _generation;
+    _isReshrinking = true;
+    const minSize = 32.0;
+    try {
+      final results = await _ocr.scanZones(
+        page,
+        toShrink.map((z) => z.samplingRect ?? z.rect).toList(),
+        editedTexts: toShrink.map((z) => z.extractedText).toList(),
+      );
+      if (_disposed || generation != _generation) return;
+
+      final shrunk = <String, Rect>{};
+      for (var i = 0; i < toShrink.length && i < results.length; i++) {
+        final bounds = results[i].bounds;
+        DebugLogService.instance.logInfo(
+          'Re-shrink "${toShrink[i].label}" text="${toShrink[i].extractedText}" -> bounds=$bounds',
+        );
+        if (bounds == null || bounds.isEmpty) continue;
+        var b = bounds;
+        if (b.width < minSize || b.height < minSize) {
+          b = Rect.fromCenter(
+            center: b.center,
+            width: math.max(b.width, minSize),
+            height: math.max(b.height, minSize),
+          );
+        }
+        shrunk[toShrink[i].id] = b;
+      }
+      if (shrunk.isEmpty) return;
+
+      _zones = [
+        for (final z in _zones)
+          if (shrunk.containsKey(z.id))
+            z.copyWith(rect: shrunk[z.id]!, samplingRect: shrunk[z.id]!)
+          else
+            z,
+      ];
+      _batchResult = null;
+      _notify();
+    } catch (error, stack) {
+      DebugLogService.instance.logError('Re-shrink failed', error, stack);
+    } finally {
+      _isReshrinking = false;
+    }
+  }
+
   void updateBatchFieldValue(int pageNumber, int fieldIndex, String newValue) {
     if (_disposed || _batchResult == null) return;
     final pages = List<PageData>.from(_batchResult!.pages);
@@ -637,6 +711,8 @@ class DocumentState extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _generation++;
+    _reshrinkTimer?.cancel();
+    _reshrinkTimer = null;
     // Do not close native recognizer or delete image during in-flight work.
     if (!isBusy) unawaited(_releaseResources());
     super.dispose();
