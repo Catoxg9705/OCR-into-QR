@@ -595,7 +595,16 @@ class DocumentState extends ChangeNotifier {
   /// [rect] (visual frame) and [samplingRect] so deleting stray text visibly
   /// tightens the box. Runs in the background; does not show the busy spinner.
   Future<void> _reshrinkEditedZones() async {
-    if (_disposed || isBusy || _isReshrinking) return;
+    if (_disposed || isBusy) return;
+    // If a re-shrink is already in flight, re-schedule so the latest edit is
+    // not lost (the pending timer already fired, so return won't retry).
+    if (_isReshrinking) {
+      _reshrinkTimer?.cancel();
+      _reshrinkTimer = Timer(const Duration(milliseconds: 400), () {
+        unawaited(_reshrinkEditedZones());
+      });
+      return;
+    }
     final page = _canvas;
     if (page == null) return;
 
@@ -623,8 +632,11 @@ class DocumentState extends ChangeNotifier {
       final shrunk = <String, Rect>{};
       for (var i = 0; i < toShrink.length && i < results.length; i++) {
         final bounds = results[i].bounds;
+        final oldRect = toShrink[i].rect;
         DebugLogService.instance.logInfo(
-          'Re-shrink "${toShrink[i].label}" text="${toShrink[i].extractedText}" -> bounds=$bounds',
+          'Re-shrink "${toShrink[i].label}" text="${toShrink[i].extractedText}" '
+          'old=${oldRect.width.toInt()}x${oldRect.height.toInt()} '
+          'new=${bounds == null ? 'null' : '${bounds.width.toInt()}x${bounds.height.toInt()}'}',
         );
         if (bounds == null || bounds.isEmpty) continue;
         var b = bounds;
